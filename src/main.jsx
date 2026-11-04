@@ -1,0 +1,182 @@
+import React, { useCallback, useEffect, useRef, useState } from 'react'
+import { createRoot } from 'react-dom/client'
+import { PoseLandmarker } from '@mediapipe/tasks-vision'
+import { resolveVisionRuntime } from './vision-runtime'
+import { Camera, CameraOff, ChevronRight, Maximize2, Minimize2, RotateCcw, VolumeX } from 'lucide-react'
+import { createQuestion } from './math'
+import { identifyPose, SKELETON } from './pose'
+import { playTone, speakVietnamese } from './sound'
+import { assets, poseImages } from './images'
+import { loadLesson, LessonsPage } from './lessons'
+import './style.css'
+
+const TOTAL = 10
+const MODEL = 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task'
+const praise = ['Tuyệt vời! Con giỏi lắm!', 'Chính xác! Con làm rất tốt!', 'Xuất sắc! Tiếp tục nhé!']
+const encouragement = ['Chưa đúng rồi. Con hãy thử câu tiếp theo nhé!', 'Cố lên! Câu sau mình làm tốt hơn nhé!']
+const random = xs => xs[Math.floor(Math.random()*xs.length)]
+function App() {
+  const [range] = useState(()=>loadLesson().range)
+  const [operation] = useState(()=>loadLesson().operation)
+  const [question,setQuestion] = useState(()=>createQuestion(loadLesson().range,loadLesson().operation))
+  const [index,setIndex] = useState(0)
+  const [score,setScore] = useState(0)
+  const [result,setResult] = useState(null)
+  const [isFinished,setFinished] = useState(false)
+  const [enabled,setEnabled] = useState(false)
+  const [cameraStatus,setCameraStatus] = useState('off')
+  const [cameraError,setCameraError] = useState('')
+  const [detected,setDetected] = useState(null)
+  const [hold,setHold] = useState(0)
+  const [muted,setMuted] = useState(false)
+  const [manual,setManual] = useState(false)
+  const [fullscreen,setFullscreen] = useState(false)
+  const videoRef=useRef(null), canvasRef=useRef(null), streamRef=useRef(null), landmarkerRef=useRef(null), frameRef=useRef(0)
+  const gameRef=useRef({}), poseRef=useRef({id:null,since:0,armed:true}), lastFrameRef=useRef(0), lastVideoRef=useRef(-1), startTokenRef=useRef(0)
+  const resultTimerRef=useRef(null)
+  gameRef.current={question,index,result,isFinished,muted,score}
+
+  const answer=useCallback((choice)=>{
+    const state=gameRef.current
+    if(state.result || state.isFinished) return
+    const correct = choice.answer===state.question.correct
+    const message = correct ? random(praise) : random(encouragement)
+    gameRef.current={...state,result:{answer:choice.answer,correct,message}}
+    setResult({answer:choice.answer,correct,message})
+    if(correct) setScore(s=>s+1)
+    if(!state.muted) {playTone(correct); speakVietnamese(message)}
+    poseRef.current={id:null,since:0,armed:false}
+
+  },[range,operation])
+  const answerRef=useRef(answer)
+  answerRef.current=answer
+
+  const reset=useCallback((nextRange=range,nextOp=operation)=>{
+    if(resultTimerRef.current) clearTimeout(resultTimerRef.current)
+    try{window.speechSynthesis?.cancel()}catch{}
+    poseRef.current={id:null,since:0,armed:true}
+    setQuestion(createQuestion(nextRange,nextOp));setIndex(0);setScore(0);setResult(null);setFinished(false);setDetected(null);setHold(0)
+  },[range,operation])
+
+  const stopCamera=useCallback(()=>{
+    startTokenRef.current++
+    cancelAnimationFrame(frameRef.current)
+    if(streamRef.current) streamRef.current.getTracks().forEach(t=>t.stop())
+    streamRef.current=null
+    landmarkerRef.current?.close();landmarkerRef.current=null
+    if(videoRef.current) videoRef.current.srcObject=null
+    setEnabled(false);setCameraStatus('off');setDetected(null);setHold(0)
+    poseRef.current={id:null,since:0,armed:true}
+  },[])
+
+  const processFrame=useCallback((now)=>{
+    const video=videoRef.current, canvas=canvasRef.current, model=landmarkerRef.current
+    if(!video || !model || !streamRef.current) return
+    frameRef.current=requestAnimationFrame(processFrame)
+    if(now-lastFrameRef.current<90 || video.readyState<2 || lastVideoRef.current===video.currentTime) return
+    lastFrameRef.current=now;lastVideoRef.current=video.currentTime
+    try {
+      const result=model.detectForVideo(video,now)
+      const points=result.landmarks?.[0]
+      if(canvas){
+        const ctx=canvas.getContext('2d'),width=canvas.width=video.videoWidth||640,height=canvas.height=video.videoHeight||480
+        ctx.clearRect(0,0,width,height)
+        if(points){
+          ctx.lineWidth=5;ctx.lineCap='round';ctx.strokeStyle='#83ecbb';ctx.fillStyle='#ffffff'
+          SKELETON.forEach(([a,b])=>{const p=points[a],q=points[b];if(!p||!q)return;ctx.beginPath();ctx.moveTo(p.x*width,p.y*height);ctx.lineTo(q.x*width,q.y*height);ctx.stroke()})
+          ;[11,12,13,14,15,16].forEach(i=>{const p=points[i];if(!p)return;ctx.beginPath();ctx.arc(p.x*width,p.y*height,6,0,Math.PI*2);ctx.fill()})
+        }
+      }
+      const pose=identifyPose(points)
+      setDetected(prev=>prev===pose?prev:pose)
+      const state=poseRef.current
+      if(gameRef.current.result || gameRef.current.isFinished){setHold(0);return}
+      // Re-arm only after pose is released, to avoid reselecting on next question.
+      if(!pose){if(state.id || !state.armed)poseRef.current={id:null,since:0,armed:true};setHold(0);return}
+      if(!state.armed){setHold(0);return}
+      if(state.id!==pose){poseRef.current={id:pose,since:now,armed:true};setHold(0);return}
+      const progress=Math.min(100,((now-state.since)/1250)*100)
+      setHold(Math.round(progress))
+      if(progress>=100){
+        const choice=gameRef.current.question.choices.find(c=>c.id===pose)
+        if(choice) answerRef.current(choice)
+      }
+    } catch(err){console.warn('MediaPipe frame error:',err)}
+  },[])
+
+  const startCamera=useCallback(async()=>{
+    if(streamRef.current) return
+    const token=++startTokenRef.current
+    setCameraError('');setCameraStatus('loading');setEnabled(true)
+    try {
+      if(!navigator.mediaDevices?.getUserMedia) throw new Error('Trình duyệt không hỗ trợ camera hoặc website chưa chạy trên HTTPS.')
+      const stream=await navigator.mediaDevices.getUserMedia({video:{facingMode:'user',width:{ideal:960},height:{ideal:720}},audio:false})
+      if(token!==startTokenRef.current){stream.getTracks().forEach(t=>t.stop());return}
+      streamRef.current=stream
+      if(!videoRef.current) throw new Error('Không tìm thấy khung camera.')
+      videoRef.current.srcObject=stream
+      await videoRef.current.play()
+      const fileset=await resolveVisionRuntime()
+      if(token!==startTokenRef.current) return
+      let model
+      try{model=await PoseLandmarker.createFromOptions(fileset,{baseOptions:{modelAssetPath:MODEL,delegate:'GPU'},runningMode:'VIDEO',numPoses:1,minPoseDetectionConfidence:.55,minPosePresenceConfidence:.55,minTrackingConfidence:.55})}
+      catch{model=await PoseLandmarker.createFromOptions(fileset,{baseOptions:{modelAssetPath:MODEL,delegate:'CPU'},runningMode:'VIDEO',numPoses:1})}
+      if(token!==startTokenRef.current){model.close();return}
+      landmarkerRef.current=model;setCameraStatus('ready');poseRef.current={id:null,since:0,armed:true}
+      lastFrameRef.current=0;lastVideoRef.current=-1
+      frameRef.current=requestAnimationFrame(processFrame)
+    }catch(err){
+      console.error(err)
+      stopCamera()
+      setCameraStatus('error')
+      setCameraError(err.name==='NotAllowedError'?'Bạn chưa cấp quyền camera. Hãy cho phép truy cập camera trong trình duyệt rồi thử lại.':err.name==='NotFoundError'?'Không tìm thấy camera trên thiết bị.':`Không mở được camera/AI: ${err.message}`)
+    }
+  },[processFrame,stopCamera])
+
+  useEffect(()=>()=>{if(resultTimerRef.current)clearTimeout(resultTimerRef.current);cancelAnimationFrame(frameRef.current);streamRef.current?.getTracks().forEach(t=>t.stop());landmarkerRef.current?.close()},[])
+  useEffect(()=>{const handler=()=>setFullscreen(!!document.fullscreenElement);document.addEventListener('fullscreenchange',handler);return()=>document.removeEventListener('fullscreenchange',handler)},[])
+  const toggleFullscreen=async()=>{try{if(document.fullscreenElement)await document.exitFullscreen();else await document.documentElement.requestFullscreen()}catch{alert('Trình duyệt này không hỗ trợ toàn màn hình.')}}
+  const nextQuestion=()=>{
+    if(!result) return
+    if(index+1>=TOTAL) setFinished(true)
+    else {setQuestion(createQuestion(range,operation));setIndex(i=>i+1)}
+    setResult(null);setDetected(null);setHold(0)
+  }
+  return <div className="page-shell">
+    <header className="topbar">
+      <a className="brand" href="/" aria-label="Bé Học Toán Cùng AI"><img src={assets.robot} alt=""/><span>Bé Học Toán Cùng <em>AI</em></span></a>
+      <div className="top-actions"><div className="score-pill"><img src={assets.star} alt="Điểm"/>{score*10}</div><a className="profile-pill" href="/lessons"><img src={assets.avatar} alt=""/><span>Bài học</span><ChevronRight size={20}/></a><button className="icon-btn fullscreen" onClick={toggleFullscreen} aria-label="Toàn màn hình">{fullscreen?<Minimize2/>:<Maximize2/>}</button></div>
+    </header>
+    <main>
+      <section className="question-stage" aria-label="Câu hỏi toán">
+        <img className="cheer cheer-boy" src={assets.boy} alt=""/>
+        <img className="cheer cheer-girl" src={assets.girl} alt=""/>
+        <div className="lesson-label">🧮 Bài tập Toán · Phạm vi {range}</div>
+        <div className="question-progress"><span>Câu {isFinished?TOTAL:index+1} / {TOTAL}</span><progress value={isFinished?TOTAL:index} max={TOTAL} aria-label="Tiến độ bài học"/></div>
+        <div className="equation"><span>{isFinished?'🎉':question.a}</span>{!isFinished&&<><span>{question.symbol}</span><span>{question.b}</span><span>=</span><span className="answer-mark">?</span></>}{isFinished&&<span className="finish-title">Hoàn thành!</span>}<button className="sound-btn" onClick={()=>{setMuted(m=>!m);if(muted)speakVietnamese(`${question.a} ${question.symbol==='+'?'cộng':'trừ'} ${question.b} bằng bao nhiêu?`)}} aria-label={muted?'Bật âm thanh':'Tắt âm thanh'} aria-pressed={!muted}>{muted?<VolumeX/>:<img src={assets.sound} alt=""/>}</button></div>
+      </section>
+      <section className="play-panel">
+        <div className="camera-section">
+          <div className="camera-viewport">
+            <video ref={videoRef} className="camera-video" playsInline muted autoPlay style={{display:enabled?'block':'none'}}/><canvas ref={canvasRef} className="camera-canvas" style={{display:cameraStatus==='ready'?'block':'none'}}/>
+            <div className="camera-label"><Camera size={20}/> Camera của bé</div>
+            {cameraStatus!=='ready'&&<div className="camera-placeholder"><img src={assets.robot} alt=""/><h2>{cameraStatus==='loading'?'Đang khởi động AI…':'Sẵn sàng vận động?'}</h2><p>{cameraStatus==='loading'?'Đang tải mô hình nhận diện tư thế':'Đứng đủ xa để thấy đầu, vai và hai tay nhé!'}</p>{cameraStatus!=='loading'&&<button className="primary-btn" onClick={startCamera}><Camera size={20}/> Bật camera</button>}</div>}
+            {cameraStatus==='ready'&&<><div className="viewfinder"/><div className="pose-status">{detected?'Đã nhận diện · Giữ tư thế nhé!':'Làm theo một trong ba tư thế bên cạnh'}</div><div className="hold-track"><div style={{width:`${hold}%`}}/></div></>}
+          </div>
+          {cameraError&&<p className="error-box" role="alert">{cameraError}</p>}
+          <div className="camera-bottom"><small>● Xử lý trên thiết bị · Không lưu video</small>{cameraStatus==='ready'&&<button onClick={stopCamera}><CameraOff size={16}/> Tắt camera</button>}</div>
+        </div>
+        <div className="answers-section">
+          <h1 className="answers-heading">✨ Chọn tư thế có đáp án đúng:</h1>
+          {isFinished?<div className="finished"><img src={assets.star} alt=""/><h2>Con làm tốt lắm!</h2><p>Đúng {score}/{TOTAL} câu · {score*10} điểm</p><button className="primary-btn" onClick={()=>reset()}><RotateCcw size={20}/> Chơi lại nào!</button><a href="/lessons">Chọn bài học khác</a></div>:<>
+          <div className="pose-grid">{question.choices.map((choice,i)=><button key={`${index}-${choice.id}`} className={`pose-option pose-${i} ${result?.answer===choice.answer?(result.correct?'selected-right':'selected-wrong'):''} ${detected===choice.id&&!result?'pose-detected':''}`} disabled={!!result||(!manual&&cameraStatus==='ready')} onClick={()=>answer(choice)} aria-label={`${choice.name}: đáp án ${choice.answer}`}><span className="option-letter">{String.fromCharCode(65+i)}</span><img className="pose-art" src={poseImages[choice.id]} alt={choice.name}/><span className="pose-name">{choice.name}</span><span className="pose-answer">{choice.answer}</span>{result?.answer===choice.answer&&<span className="choice-check">{result.correct?'✓':'×'}</span>}</button>)}</div>
+          <div className="answer-footer"><div className={`feedback ${result?(result.correct?'positive':'negative'):''}`} role="status">{result?<><span>{result.correct?'✓':'💪'}</span><b>{result.correct?'Tuyệt vời!':'Cố lên nhé!'} Đáp án đúng là {question.correct}.</b></>:<><span>💡</span><b>{cameraStatus==='ready'?'Giữ tư thế 1,25 giây để trả lời':'Bật camera hoặc chạm vào đáp án để chơi'}</b></>}</div><button className="primary-btn next-btn" disabled={!result} onClick={nextQuestion}>{index+1===TOTAL?'Xem kết quả':'Câu tiếp theo'} <ChevronRight size={22}/></button></div>
+          </>}
+          <div className="play-tools"><label><input type="checkbox" checked={manual} onChange={e=>setManual(e.target.checked)}/> Cho phép chọn bằng tay</label><button onClick={()=>reset()}><RotateCcw size={15}/> Chơi lại</button></div>
+        </div>
+      </section>
+      <p className="page-note">🌈 Học vui, vận động khỏe! <span>Thả tay giữa hai câu để chọn tiếp nhé.</span></p>
+    </main>
+  </div>
+}
+createRoot(document.getElementById('root')).render(window.location.pathname.replace(/\/$/,'')==='/lessons'?<LessonsPage/>:<App/>)
