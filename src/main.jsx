@@ -176,7 +176,7 @@ function App() {
         </div>
       </section>
       <p className="page-note">🌈 Học vui, vận động khỏe! <span>Thả tay giữa hai câu để chọn tiếp nhé.</span></p>
-    </main>
+    </main><footer className="copyright">© {new Date().getFullYear()} Bông Trần. All rights reserved.</footer>
   </div>
 }
 createRoot(document.getElementById('root')).render(window.location.pathname.replace(/\/$/,'')==='/lessons'?<LessonsPage/>:<App/>)
