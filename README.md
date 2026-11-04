@@ -1,4 +1,4 @@
-# Bé Học Toán Cùng AI
+# Bé Học Cùng AI
 
 Website học toán cho học sinh tiểu học: React + Vite + Tailwind CSS 4 + MediaPipe Pose Landmarker. Tất cả thao tác nhận diện khung hình chạy tại thiết bị người dùng, không gửi/lưu video lên máy chủ ứng dụng.
 
@@ -29,7 +29,7 @@ Deploy thư mục `dist/` lên dịch vụ hosting static có HTTPS (Cloudflare 
    - **Khoanh tay:** hai bàn tay hướng về vai đối diện, trước ngực.
    - **Chào cờ:** một tay sát thái dương, tay còn lại hạ xuống.
 4. Thả tay về trạng thái bình thường giữa hai câu để nhận diện câu kế tiếp.
-5. Nếu AI không hoạt động hoặc học sinh cần hỗ trợ, tích **Cho phép bấm chọn đáp án (dự phòng)** và nhấn trực tiếp vào một trong 3 thẻ.
+5. Học sinh có thể chọn bằng tư thế hoặc bấm trực tiếp vào một trong ba thẻ đáp án.
 6. Mỗi lượt 10 câu, đúng +10 điểm; bấm **Câu tiếp theo** sau khi trả lời.
 
 ## Hạn chế kỹ thuật
@@ -56,3 +56,17 @@ Deploy thư mục `dist/` lên dịch vụ hosting static có HTTPS (Cloudflare 
 - Hosting cần cấu hình SPA fallback về `index.html` cho URL `/lessons`.
 - Bố cục ngang cho laptop và iPad landscape; xếp camera trên đáp án trên iPad portrait và điện thoại.
 - Ảnh gốc giữ trong `src/assets/images/`; bản giảm kích thước nằm trong `optimized/`.
+
+## Môn Tiếng Việt
+
+Trong `/lessons`, chọn **Tiếng Việt** và **lớp 1/2/3**. Mỗi câu khuyết đúng **1 từ**, với ba đáp án và ba tư thế khác nhau. Cài đặt nhiều ô cũ được bỏ qua.
+
+Ngân hàng có **120 câu tự biên (40 câu/lớp)** trong `src/vietnamese-bank.js`:
+
+- Lớp 1: câu ngắn, đồ vật, con vật, gia đình và giác quan.
+- Lớp 2: câu dài hơn, từ ghép, sinh hoạt, học tập và an toàn.
+- Lớp 3: tục ngữ, từ miêu tả, so sánh, nguyên nhân và kết quả.
+
+Mỗi lượt chọn 10 câu không lặp. Đúng được 10 điểm. Khi âm thanh bật, ứng dụng phát tuần tự: **tiếng vỗ tay / âm thua cuộc → “Hoan hô!...” / “Rất tiếc!...” → câu hoàn chỉnh**. Nút **Đọc đáp án** phát câu đầy đủ theo yêu cầu, kể cả khi tắt âm thanh tự động. Chuyển câu, chơi lại hoặc tắt âm thanh sẽ dừng chuỗi đang phát.
+
+Âm hiệu ứng dùng các file trong `src/assets/sounds/`: `success.mp3` khi đúng, `incorrect.mp3` khi sai. Đợi file phát xong mới đọc nhận xét và câu đầy đủ. Giọng đọc dùng SpeechSynthesis tiếng Việt của thiết bị. Chạy `npm test` để kiểm tra ngân hàng câu, đáp án, thứ tự âm thanh và hủy phát.

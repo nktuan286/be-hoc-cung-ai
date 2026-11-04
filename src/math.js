@@ -6,7 +6,7 @@ export const POSES = [
   { id: 'salute', name: 'Chào cờ', short: 'Chào cờ', hint: 'Đặt một tay gần thái dương' },
 ]
 const rand = n => Math.floor(Math.random() * n)
-const shuffle = values => {
+export const shuffle = values => {
   const result = [...values]
   for(let i=result.length-1;i>0;i--){const j=rand(i+1);[result[i],result[j]]=[result[j],result[i]]}
   return result
